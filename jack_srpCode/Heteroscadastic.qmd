@@ -1,0 +1,322 @@
+---
+title: "Heteroscadastic"
+format: html
+---
+
+```{r}
+
+# Load required packages
+library(dplyr)        # For basic data and calculation  
+library(tidyverse)    # For easy use and some grahping
+library(stats)        # For basic stats
+library(MASS)         # for mvrnorm (multivariate normal sampling)
+library(mvtnorm)      # for dmvnorm and pmvnorm (density and probabilities)
+library(Matrix)       # for advanced matrix operations
+library(pracma)       # for numerical integration and linear algebra
+
+```
+
+```{r}
+
+# Set base simulation parameters
+d <- 3      # Random dimension between 3 and 6
+mu <- c(0,0,0)     # Mean vector
+sigma_vec <- c(1,2,3)  # Heteroscedastic variances
+Sigma <- diag(sigma_vec)       # Diagonal covariance matrix
+trace <- sum(sigma_vec)       # Find the trace of sigma_vec
+
+# Created the shrinkage function where it subtracts X * trace / norm from vector X
+shrinkage_function <- function( X, mu, sigma_vec){
+  trace_sigma <- sum(sigma_vec)
+  norm_x <-  sum(X^2)
+  shrink_factor <- trace_sigma/norm_x
+  shrinked <- X - shrink_factor*X
+  return(shrinked)
+}
+
+# Check whether the shrinage function actually shrinks the value
+x_sample <- mvrnorm(n = 1, mu = mu, Sigma = Sigma)
+x_shrinked <- shrinkage_function(x_sample, mu, sigma_vec)
+
+x_sample
+x_shrinked
+```
+
+```{r Iterated_Error_onemean}
+
+
+n <- 10000
+
+X <- mvrnorm(n = n, mu = mu, Sigma = Sigma)
+
+# Create the loop to calculate Error for each sample and add it to the total error
+error_vec <- sapply(1:nrow(X), function(i) {
+  X_vec <- as.numeric(X[i, ])
+  X_shrinked <- shrinkage_function(X_vec, mu, sigma_vec)
+  sum((X_shrinked - mu)^2)
+})
+
+# Find total error and MSE
+total_error <- sum(error_vec)
+MSE <- total_error/n 
+
+# Print the result
+cat(total_error,"is the total error\n")
+cat(MSE, "is the MSE")
+
+# More cleaning of the workspace by removing variable
+rm(total_error,MSE,error_vec)
+```
+
+```{r Expectation}
+# joint MGF for phi(0, -t)
+# This function is already vectorized using sapply, so it's suitable for integrate.
+joint_mgf <- function(t, mu, sigma_vec) {
+  
+  # Diagonal matrix from sigma_vec
+  D <- diag(2 * t * sigma_vec + 1)
+  
+  # Compute terms
+  first_term <- det(D)^(-1/2)
+  exponent <- ((t(mu) %*% solve(D) %*% mu) / 2) - (t(mu) %*% mu / 2)
+  second_term <- exp(exponent)
+  
+  return(first_term * second_term)
+}
+
+
+expectation_1 <- quadinf(joint_mgf, 0, Inf, mu = mu, sigma_vec = sigma_vec)$Q
+
+integrand_mu_2_1 <- function(t, mu, sigma_vec) {
+  inv_diag <- 1 / (2*t*sigma_vec + 1)
+  L <- diag(sqrt(inv_diag))
+
+  R <- t(L) %*% diag(sigma_vec^2) %*% L
+  mu_tilda <- t(L) %*% mu
+  
+  second_term <- sum(R) + t(mu_tilda) %*% R %*% mu_tilda
+  
+  phi_value <- joint_mgf(t,mu,sigma_vec)
+  
+  return(t*phi_value*second_term)
+}
+
+expectation_2 <- pracma::quadinf(integrand_mu_2_1, 0, Inf, mu = mu, sigma_vec = sigma_vec)$Q
+
+Expected_risk <- trace - trace^2 * expectation_1 + 4 * trace * expectation_2
+
+cat(Expected_risk, "is the expected risk")
+```
+
+```{r}
+
+
+n_samples <- 10000   # inner loop size
+n_reps <- 100       # outer loop size
+
+index <- 1  # running index for storing errors
+#initiate random table 
+MSE <- tibble()
+
+# Run the simulation using sapply
+results_list <- lapply(seq_len(n_reps), function(rep) {
+  len <- sample(3:6, 1)
+  mu <- runif(len)
+  d <- length(mu)
+  sigma_vec <- runif(len)
+  Sigma <- diag(sigma_vec)
+  trace <- sum(sigma_vec)
+  
+  X <- mvrnorm(n = n_samples, mu = mu, Sigma = Sigma)
+  
+  # Compute total error using sapply
+  total_error <- sum(sapply(1:nrow(X), function(i) {
+    x_vec <- as.numeric(X[i, ])
+    x_vec_shrinked <- shrinkage_function(x_vec, d, sigma_vec)
+    sum((x_vec_shrinked - mu)^2)
+  }))
+  
+  MSE_value <- total_error / n_samples
+  
+  # Compute expected error from integral
+  expectation_1 <- quadinf(joint_mgf, 0, Inf, mu = mu, sigma_vec = sigma_vec)$Q
+  expectation_2 <- quadinf(integrand_mu_2_1, 0, Inf, mu = mu, sigma_vec = sigma_vec)$Q
+  Expected_risk <- trace - trace^2 * expectation_1 + 4 * trace * expectation_2
+  
+  # Return one row as a tibble
+  tibble(
+    Trial = rep,
+    Dimensions = d,
+    Mean = list(mu),
+    Empirical_Error = MSE_value,
+    Expected_error = Expected_risk
+  )
+})
+# Combine all into a single tibble
+MSE <- bind_rows(results_list)
+
+# Show the MSE tibble
+MSE
+```
+
+```{r}
+# Analasis of MSE
+
+MSE |> 
+  mutate(Error_Diff = Expected_error - Empirical_Error) |> 
+  ggplot(aes(x = Dimensions, y = Error_Diff)) +
+    geom_point(aes(color = Dimensions), size = 3) +
+    scale_color_viridis_c(option = "plasma") +  # better contrast for continuous scale
+    geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+    labs(
+      title = "Expected vs. Empirical Error Difference by Dimension",
+      x = "Dimension (d)",
+      y = "Expected Error - Empirical Error",
+      color = "Dimension"
+    ) +
+    theme_minimal(base_size = 13)
+```
+
+```{r}
+# Settings
+#target_sigmas <- replicate(500, runif(sample(2:4, 1), min = 0.1, max = 3), simplify = FALSE)
+
+# Settings: n distinct dimensions
+dimensions <- 2:6
+
+# Generate one sigma_vec per dimension
+target_sigmas <- lapply(dimensions, function(d) runif(d, min = 0.1, max = 3))
+set.seed(123)
+
+# Store results
+Sigma_results <- list()
+
+for (sigma_vec in target_sigmas) {
+  d <- length(sigma_vec)
+  Sigma <- diag(sigma_vec)
+  
+  # Eigen decomposition
+  eig <- eigen(Sigma)
+  
+  leading_vector <- eig$vectors[, which.max(eig$values)]
+  lagging_vector <- eig$vectors[, which.min(eig$values)]
+  
+  # Store in tibble
+  Sigma_results[[length(Sigma_results) + 1]] <- tibble(
+    Dimension = d,
+    Sigma_Vec = list(sigma_vec),
+    Leading_Eigenvector = list(leading_vector),
+    Lagging_Eigenvector = list(lagging_vector)
+  )
+}
+
+# Combine into a tibble
+Sigma_plot_data <- bind_rows(Sigma_results)
+
+# Add Covariance Matrix column (diagonal from sigma_vec)
+Sigma_plot_data <- Sigma_plot_data |> 
+  mutate(Covariance_Matrix = map(Sigma_Vec, ~ diag(.x)))
+
+Sigma_plot_data <- Sigma_plot_data |> 
+  mutate(Sigma_ID = row_number())
+
+# Show preview
+Sigma_plot_data
+
+# Print each covariance matrix cleanly
+for (i in seq_len(nrow(Sigma_plot_data))) {
+  cat("\n--- Covariance Matrix for Dimension", Sigma_plot_data$Dimension[i], "---\n")
+  print(round(Sigma_plot_data$Covariance_Matrix[[i]], 3))
+}
+
+
+```
+
+```{r}
+
+# Define your target squared L2 norms (e.g., from 0.1 to 10)
+target_l2_norms <- seq(0.01, 10, by = 0.01)
+
+# Store results
+Mu_scaled_results <- list()
+
+for (i in seq_len(nrow(Sigma_plot_data))) {
+  dim <- Sigma_plot_data$Dimension[i]
+  lead_vec <- Sigma_plot_data$Leading_Eigenvector[[i]]
+  lag_vec  <- Sigma_plot_data$Lagging_Eigenvector[[i]]
+  
+  # Normalize vectors to unit norm (just in case)
+  lead_vec <- lead_vec / sqrt(sum(lead_vec^2))
+  lag_vec  <- lag_vec  / sqrt(sum(lag_vec^2))
+  
+  for (l2 in target_l2_norms) {
+    scale_factor <- sqrt(l2)  # Because L2 norm = sqrt of squared norm
+    
+    mu_lead <- lead_vec * scale_factor
+    mu_lag  <- lag_vec  * scale_factor
+    
+    # Store result as tibble
+    Mu_scaled_results[[length(Mu_scaled_results) + 1]] <- tibble(
+      Dimension = dim,
+      Sigma_ID = i,  # This tracks which Sigma row it's from
+      Squared_L2 = l2,
+      Direction = "Leading",
+      Mu = list(mu_lead)
+    )
+    
+    Mu_scaled_results[[length(Mu_scaled_results) + 1]] <- tibble(
+      Dimension = dim,
+      Sigma_ID = i,  # This tracks which Sigma row it's from
+      Squared_L2 = l2,
+      Direction = "Lagging",
+      Mu = list(mu_lag)
+    )
+  }
+}
+
+# Combine all results into one tibble
+Mu_scaled_tibble <- bind_rows(Mu_scaled_results)
+
+Mu_scaled_tibble <- Mu_scaled_tibble |>
+  left_join(dplyr::select(Sigma_plot_data, Sigma_Vec, Sigma_ID), by = "Sigma_ID")
+
+# Preview
+Mu_scaled_tibble
+
+Mu_scaled_tibble <- Mu_scaled_tibble |> 
+  rowwise() |> 
+  mutate(
+    Trace = sum(unlist(Sigma_Vec)),
+    
+    Expectation_1 = quadinf(joint_mgf, 0, Inf, mu = Mu, sigma_vec = Sigma_Vec)$Q,
+    
+    Expectation_2 = quadinf(integrand_mu_2_1, 0, Inf, mu = Mu, sigma_vec = Sigma_Vec)$Q,
+    
+    Expected_Risk = Trace - Trace^2 * Expectation_1 + 4 * Trace * Expectation_2
+  ) |> 
+  ungroup()
+
+# Preview
+Mu_scaled_tibble
+
+```
+
+```{r}
+Mu_scaled_tibble |> 
+  mutate(
+    Scaled_Risk = Expected_Risk / Dimension,
+    Mu_Norm_Sq = map_dbl(Mu, ~ sum(.x^2))
+  ) |> 
+  ggplot(aes(x = Mu_Norm_Sq, y = Scaled_Risk)) +
+    geom_line(aes(color = Direction), linewidth = 1) +
+    geom_point(aes(color = Direction), size = 0.5, alpha = 0.7) +  # Adds visible x values
+    facet_wrap(~ Dimension, scales = "free_y") +
+    labs(
+      title = "Scaled Expected Risk vs. ||μ||²",
+      x = expression("||" * mu * "||"^2),
+      y = "Expected Risk / Dimension",
+      color = "Direction"
+    ) +
+    theme_minimal(base_size = 13)
+
+```

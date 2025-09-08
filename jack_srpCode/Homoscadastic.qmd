@@ -1,0 +1,252 @@
+---
+title: "Untitled"
+format: html
+editor: visual
+---
+
+```{r Package}
+
+# Load required packages
+library(dplyr)        # For basic data and calculation  
+library(tidyverse)    # For easy use and some grahping
+library(stats)        # For basic stats
+library(MASS)         # for mvrnorm (multivariate normal sampling)
+library(mvtnorm)      # for dmvnorm and pmvnorm (density and probabilities)
+library(Matrix)       # for advanced matrix operations
+library(pracma)       # for numerical integration and linear algebra
+
+```
+
+```{r Parameter}
+
+#Define the mean for X
+mu <- c(0,0,0,0)
+d <- length(mu)
+
+#Define the variance for X, in this case identity matrix'
+Sigma<-1
+
+# Defind Identity matrix using the length of the mean
+identity <- diag(length(mu))
+
+#Define Shrinkage function
+shrinkage_function <- function(X, d, sigma2) {
+  norm_sq <- sum(X^2)  # L2 norm squared
+  factor <- ((d-2) * sigma2) / norm_sq
+  shrinked <- X - factor * X
+  return(shrinked)
+}
+
+# One sample from the earlier multivariate normal X
+x_sample <- mvrnorm(n = 1, mu = mu, Sigma = Sigma*identity)
+
+# Apply shrinkage
+x_shrinked <- shrinkage_function(x_sample, d, Sigma)
+
+#Print out the shrinked and the sampled value
+x_sample
+x_shrinked
+```
+
+```{r Iteration_onemean}
+#Set number of Samples taken from the MVNorm, and take the sample 
+n <- 10000
+X <- mvrnorm(n = n, mu = mu, Sigma = Sigma * diag(d))
+
+#Store the result in a tibble for calculation
+X_tibble<- as_tibble(X,.name_repair = "minimal")
+
+#Initiate total error
+total_error <- 0
+
+# Create the for loop to calculate Error for each sample and add it to the total error
+# I am still looking at the syntax of the Sapply loop, will update shortly
+error_vec <- sapply(1:nrow(X_tibble), function(i) {
+  X_vec <- as.numeric(X_tibble[i, ])
+  X_shrinked <- shrinkage_function(X_vec, d, Sigma)
+  sum((X_shrinked - mu)^2)
+})
+
+total_error <- sum(error_vec)
+
+
+# Find MSE
+MSE <- total_error/n
+
+
+# Print the result
+cat(total_error,"is the total error\n")
+cat(MSE, "is the MSE")
+
+# More cleaning of the workspace by removing variable
+rm(total_error,MSE,error_vec)
+```
+
+```{r Expectation}
+#define joint MGF or phi function as a function of mean
+joint_mgf_hc <- function(t){
+  n <- length(mu)
+  mu_sq_norm <- sum(mu^2)
+  part1 <- (1 + 2 * t)^(-n / 2)
+  part2 <- exp((mu_sq_norm / (2 * (1 + 2 * t))) - (mu_sq_norm / 2))
+  return(part1 * part2)
+}
+
+# Function that allow different mean, not hard coded
+joint_mgf <- function(mu, t) {
+  d <- length(mu)
+  mu_sq_norm <- sum(mu^2)
+  part1 <- (1 + 2 * t)^(-d / 2)
+  part2 <- exp((mu_sq_norm / (2 * (1 + 2 * t))) - (mu_sq_norm / 2))
+  return(part1 * part2)
+}
+
+# Function of joint mgf using norm as input
+joint_mgf_norm <- function(d, norm_mu, t) {
+  part1 <- (1 + 2 * t)^(-d / 2)
+  part2 <- exp((norm_mu / (2 * (1 + 2 * t))) - (norm_mu / 2))
+  return(part1 * part2)
+}
+
+
+# Perform numerical integration
+result <- integrate(function(t) joint_mgf(mu,t), lower = 0, upper = Inf)
+
+# Extract expectation value
+E_inv_xtx <- result$value
+
+# Compute risk using your formula
+risk <- d * Sigma + (4 * d - d^2) * Sigma^2 * E_inv_xtx
+
+# Output everything
+cat("E[1 / (X^T X)] =", E_inv_xtx, "\n")
+cat("Shrinkage Risk =", risk, "\n")
+
+rm(risk,E_inv_xtx,result)
+```
+
+```{r Iteration_over_different_mu}
+n_samples <- 10000   # inner loop size
+n_reps <- 100       # outer loop size
+
+index <- 1  # running index for storing errors
+#initiate random table 
+MSE <- tibble()
+
+#Initiate random sigma
+Sigma <- 1
+
+# Run the simulation using sapply
+results_list <- lapply(seq_len(n_reps), function(rep) {
+  len <- sample(3:6, 1)
+  mu <- runif(len)
+  d <- length(mu)
+  
+  X <- mvrnorm(n = n_samples, mu = mu, Sigma = Sigma * diag(d))
+  X_tibble <- as_tibble(X, .name_repair = "minimal")
+  
+  # Compute total error using sapply
+  total_error <- sum(sapply(1:nrow(X_tibble), function(i) {
+    x_vec <- as.numeric(X_tibble[i, ])
+    x_vec_shrinked <- shrinkage_function(x_vec, d, Sigma)
+    sum((x_vec_shrinked - mu)^2)
+  }))
+  
+  MSE_value <- total_error / n_samples
+  
+  # Compute expected error from integral
+  result <- integrate(function(t) joint_mgf(mu,t), lower = 0, upper = Inf)
+  risk <- d * Sigma + (4 * d - d^2) * Sigma^2 * result$value
+  
+  # Return one row as a tibble
+  tibble(
+    Trial = rep,
+    Dimensions = d,
+    Mean = list(mu),
+    Empirical_Error = MSE_value,
+    Expected_error = risk
+  )
+})
+
+# Combine all into a single tibble
+MSE <- bind_rows(results_list)
+
+# Show the MSE tibble
+MSE
+```
+
+```{r}
+# Analasis of MSE
+
+MSE |> 
+  mutate(Error_Diff = Expected_error - Empirical_Error) |> 
+  ggplot(aes(x = Dimensions, y = Error_Diff)) +
+    geom_point(aes(color = Dimensions), size = 3) +
+    scale_color_viridis_c(option = "plasma") +  # better contrast for continuous scale
+    geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+    labs(
+      title = "Expected vs. Empirical Error Difference by Dimension",
+      x = "Dimension (d)",
+      y = "Expected Error - Empirical Error",
+      color = "Dimension"
+    ) +
+    theme_minimal(base_size = 13)
+```
+
+```{r MSE_Mu}
+# Define norm function (||mu||^2)
+l2_norm <- function(mu) {
+  sum(mu^2)
+}
+
+# Settings
+target_norms <- seq(0.001, 10, by = 0.001)
+dimensions <- 2:8
+Sigma <- 1
+
+# Store results
+MSE_results <- list()
+# Loop over dimensions and L2 norms
+for (d in dimensions) {
+  for (target_l2 in target_norms) {
+    # Generate a unit vector and scale it
+    u <- rnorm(d)
+    u <- u / sqrt(sum(u^2))
+    # Store results
+    MSE_results[[length(MSE_results) + 1]] <- tibble(
+      Dimension = d,
+      L2Norm = target_l2,
+    )
+  }
+}
+
+# Combine into tibble
+MSE_plot_data <- bind_rows(MSE_results)
+
+MSE_plot_data <- MSE_plot_data |> 
+  mutate(Expected_risk = mapply(function(L2Norm, d) {
+    result <-
+      integrate(
+      function(t) 
+        joint_mgf_norm(d, L2Norm, t), 
+      lower = 0, 
+      upper = 50,
+      rel.tol = 1e-6,
+      subdivisions = 1000
+    )
+    d * Sigma - (d - 2)^2 * Sigma^4 * result$value
+  }, L2Norm, Dimension)) |> 
+  mutate(scaled_expected_risk = Expected_risk / Dimension) |> 
+  group_by(Dimension)
+
+ggplot(MSE_plot_data, aes(x = L2Norm, y = scaled_expected_risk, color = factor(Dimension))) +
+  geom_line(linewidth = 1) +
+
+  labs(
+    title = "Expected Shrinkage Risk vs. Squared L2 Norm of μ",
+    x = "||μ||² (Squared L2 Norm)",
+    y = "Scaled Expected Risk (MSE/k)",
+    color = "Dimension (d)"
+  ) +
+  theme_minimal(base_size = 13)
+```
