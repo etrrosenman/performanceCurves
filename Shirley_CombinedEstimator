@@ -1,1 +1,48 @@
+rm(list = ls())
+
+library(mvtnorm)
+library(tidyverse)
+library(reshape)
+
+# combined estimator risk 
+ceRisk <- function(xiMagnitude, sigmaSq, tauSq, p) {
+
+  # obtain the integrand
+  v <- sigmaSq + tauSq
+  integrand <- function(t) {
+    (1 + 2 * t * v)^(-p / 2) *
+      exp( - (t / (1 + 2 * t * v)) * (xiMagnitude / v) )
+  }
+  
+  # compute the imtegral
+  p * sigmaSq - 
+    sigmaSq^4 * (p - 2)^2 * 
+    pracma::quadinf(integrand, xa = 0, xb = Inf)$Q
+}
+
+# constants
+sigmaSq <- 1
+tauSq   <- 1
+xiMagnitudes <- seq(from = 0, to = 100, by = 0.1)
+dimensions   <- 3:9                                
+
+# compute risk ratios R / (p σ^2)
+riskRatios <- sapply(dimensions, function(p) {
+  cat(p)
+  sapply(xiMagnitudes, ceRisk, sigmaSq = sigmaSq, tauSq = tauSq, p = p) / (p * sigmaSq)
+})
+
+riskRatios <- data.frame(xiMagnitudes = xiMagnitudes, riskRatios)
+colnames(riskRatios)[-1] <- dimensions
+
+# plot
+riskRatios %>%
+  pivot_longer(cols = -xiMagnitudes, names_to = 'Dim', values_to = 'riskRatio') %>%
+  ggplot(aes(x = xiMagnitudes, y = riskRatio, col = Dim)) +
+  geom_line() +
+  ylim(0, 1) +
+  xlab("||theta - E(Y)||_2^2") +
+  ylab("MSE Rati0") +
+  ggtitle("Combined Estimator: MSE Ratio vs. ||theta - E(Y)||_2^2, by Dimension")
+
 
