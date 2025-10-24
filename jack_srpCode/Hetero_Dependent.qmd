@@ -1,0 +1,202 @@
+---
+title: "Hetero_Dependent"
+format: html
+---
+
+```{r}
+# Load required packages
+library(dplyr)        # For basic data and calculation  
+library(tidyverse)    # For easy use and some grahping
+library(stats)        # For basic stats
+library(MASS)         # for mvrnorm (multivariate normal sampling)
+library(mvtnorm)      # for dmvnorm and pmvnorm (density and probabilities)
+library(Matrix)       # for advanced matrix operations
+library(pracma)       # for numerical integration and linear algebra
+library(expm)
+```
+
+```{r}
+#Define the mean for X
+mu <- c(0,0,0,0)
+d <- length(mu)
+
+#Define the covariance matrix of X
+generate_cov_matrix <- function(d) {
+  A <- matrix(rnorm(d * d), nrow = d)
+  cov_matrix <- A %*% t(A)
+  return(cov_matrix)
+}
+
+cov_matrix <- generate_cov_matrix(d = d)
+set.seed(123)
+
+# Sigma is your covariance matrix (must be symmetric positive definite)
+# Example: Sigma <- matrix(c(2, 1, 1, 3), nrow = 2)
+
+compute_p <- function(Sigma) {
+  # Ensure it's symmetric
+  if (!isSymmetric(Sigma)) {
+    stop("Sigma must be symmetric.")
+  }
+
+  # Compute eigenvalues
+  eigenvalues <- eigen(Sigma, symmetric = TRUE, only.values = TRUE)$values
+
+  # Compute trace
+  tr_Sigma <- sum(eigenvalues)
+
+  # Find the maximum eigenvalue
+  lambda_max <- max(eigenvalues)
+
+  # Compute p
+  p <- tr_Sigma / lambda_max
+  return(p)
+}
+
+# Bock's shrinkage estimator function
+bock_shrinkage <- function(X, Sigma) {
+  # Check dimensions
+  if (length(X) != nrow(Sigma)) {
+    stop("Dimension mismatch between X and Sigma.")
+  }
+
+  # Compute p = trace / max eigenvalue
+  eigenvalues <- eigen(Sigma, symmetric = TRUE, only.values = TRUE)$values
+  tr_Sigma <- sum(eigenvalues)
+  lambda_max <- max(eigenvalues)
+  p <- tr_Sigma / lambda_max
+
+  # Compute quadratic form X^T Σ^{-1} X
+  Sigma_inv <- solve(Sigma)
+  xSx <- as.numeric(t(X) %*% Sigma_inv %*% X)
+
+  # Compute shrinkage factor
+  alpha <- 1 - (p - 2) / xSx
+
+  # Return shrunken vector
+  g_X <- alpha * X
+  return(g_X)
+}
+
+
+# One sample from the earlier multivariate normal X
+x_sample <- mvrnorm(n = 1, mu = mu, Sigma = cov_matrix)
+x_shrinked <- bock_shrinkage(x_sample,Sigma = cov_matrix)
+
+x_sample
+x_shrinked
+```
+
+```{r}
+n <- 10000
+
+X <- mvrnorm(n = n, mu = mu, Sigma = cov_matrix)
+
+# Create the loop to calculate Error for each sample and add it to the total error
+error_vec <- sapply(1:nrow(X), function(i) {
+  X_vec <- as.numeric(X[i, ])
+  X_shrinked <- bock_shrinkage(X_vec,cov_matrix)
+  sum((X_shrinked - mu)^2)
+})
+
+# Find total error and MSE
+total_error <- sum(error_vec)
+MSE <- total_error/n
+
+# Print the result
+cat(total_error,"is the total error\n")
+cat(MSE, "is the MSE")
+
+# More cleaning of the workspace by removing variable
+rm(total_error,MSE,error_vec)
+```
+
+```{r SURE_integration}
+
+mu_pq_integral <- function(mu, Sigma, A, B, p, q, upper = 100) {
+  d <- length(mu)
+  mu <- matrix(mu, ncol = 1)  # ensure column vector
+
+  # Step 1: Standardize
+  Sigma_sqrt <- as.matrix(sqrtm(Sigma))
+  Sigma_inv_sqrt <- solve(Sigma_sqrt)
+  mu_std <- Sigma_inv_sqrt %*% mu
+
+  # Step 2: Transform A and B
+  A_tilde <- Sigma_sqrt %*% A %*% Sigma_sqrt
+  B_tilde <- Sigma_sqrt %*% B %*% Sigma_sqrt
+
+  # Step 3: Define phi(0, -t)
+  phi_function <- function(t) {
+    M <- diag(d) + 2 * t * B_tilde
+    M_inv <- solve(M)
+    det_term <- det(M)^(-0.5)
+    quad_term <- t(mu_std) %*% M_inv %*% mu_std - sum(mu_std^2)
+    exp_term <- exp(0.5 * quad_term)
+    return(as.numeric(det_term * exp_term))
+  }
+
+  # Step 4: Moment of quadratic form
+  moment_function <- function(t) {
+    M <- diag(d) + 2 * t * B_tilde
+    L <- chol(solve(M))            # L L^T = M^{-1}
+    R <- t(L) %*% A_tilde %*% L
+    mu_tilde <- t(L) %*% mu_std
+
+    if (p == 1) {
+      E <- sum(diag(R)) + sum((mu_tilde)^2 * diag(R))
+    } else if (p == 2) {
+      term1 <- sum(diag(R)) + sum((mu_tilde)^2 * diag(R))
+      term2 <- 2 * sum(R * R) + 4 * sum((R %*% mu_tilde)^2)
+      E <- term1^2 + term2
+    } else {
+      stop("Only p = 1 or 2 supported")
+    }
+
+    return(t^(q - 1) * phi_function(t) * E)
+  }
+
+  # Step 5: Numerical integration
+  const <- 1 / gamma(q)
+  result <- integrate(moment_function, lower = 0, upper = upper, rel.tol = 1e-6)$value
+  return(const * result)
+}
+
+# Compute the expectation
+result <- mu_pq_integral(mu, Sigma, A, B, p, q)
+cat("E[||X||^2 / (X^T Sigma^{-1} X)^2] =", result, "\n")
+
+expected_SURE_exact <- function(mu, Sigma) {
+  d <- length(mu)
+  tr_Sigma <- sum(diag(Sigma))
+  lambda_max <- max(eigen(Sigma, symmetric = TRUE, only.values = TRUE)$values)
+  p <- tr_Sigma / lambda_max
+
+  # Define matrices
+  A <- diag(d)            # for ||X||^2
+  B <- solve(Sigma)       # for Mahalanobis norm
+
+  # E1 = E[||X||^2 / (X^T Sigma^{-1} X)^2]
+  E1 <- mu_pq_integral(mu, Sigma, A, B, p = 1, q = 2)
+
+  # E2 = E[1 / (X^T Sigma^{-1} X)]
+  E2 <- mu_pq_integral(mu, Sigma, A = diag(d), B, p = 0, q = 1)
+
+  # Plug into formula
+  term1 <- (p - 2)^2 * E1
+  term2 <- 2 * (p - 2) * E1
+  term3 <- 2 * tr_Sigma * (1 - (p - 2) * E2)
+  term4 <- -tr_Sigma
+
+  sure <- term1 + term2 + term3 + term4
+  return(sure)
+}
+
+# Example usage
+mu <- c(0, 0, 0)
+Sigma <- diag(c(0.1, 1, 10))
+
+expected_sure <- expected_SURE_exact(mu, Sigma)
+cat("Expected SURE:", expected_sure, "\n")
+
+```
