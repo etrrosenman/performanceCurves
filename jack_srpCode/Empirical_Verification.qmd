@@ -1,0 +1,75 @@
+---
+title: "Empirical_Verification"
+format: html
+---
+
+```{r Empirical_Verification}
+# Empirical Verification
+n_samples <- 100000   # inner loop size
+n_reps <- 100        # outer loop size
+
+index <- 1  # running index for storing errors
+#initiate random table 
+MSE <- tibble()
+
+# Run the simulation using sapply
+results_list <- lapply(seq_len(n_reps), function(rep) {
+  len <- sample(3:10, 1)
+  mu <- runif(len)
+  d <- length(mu)
+  #cov_matrix <- diag(1, len, len)
+  cov_matrix <- generate_cov_matrix(d)
+  eigenvalues <- eigen(cov_matrix, symmetric = TRUE, only.values = TRUE)$values
+  Tr_sigma <- sum(eigenvalues)
+  lambda_max <- max(eigenvalues)
+  p <- Tr_sigma / lambda_max
+  
+  X <- mvrnorm(n = n_samples, mu = mu, Sigma = cov_matrix)
+  
+  # Compute total error using sapply
+  total_error <- sum(sapply(1:nrow(X), function(i) {
+    x_vec <- as.numeric(X[i, ])
+    x_vec_shrinked <- bock_shrinkage(x_vec,Sigma = cov_matrix)
+    sum((x_vec_shrinked - mu)^2)
+  }))
+  
+  MSE_value <- total_error / n_samples
+  
+  # Compute expected error from integral
+  expectation_1 <- quadinf(joint_mgf, 0, Inf, mu = mu, cov_matrix = cov_matrix)$Q
+  expectation_2 <- quadinf(integrand_mu_2, 0, Inf, mu = mu, cov_matrix = cov_matrix)$Q
+  Expected_risk <- Tr_sigma + (p^2-4)*expectation_2 - 2*(p-2)*Tr_sigma*expectation_1
+  
+  # Return one row as a tibble
+  tibble(
+    Trial = rep,
+    Dimensions = d,
+    Mean = list(mu),
+    Empirical_Error = MSE_value,
+    Expected_error = Expected_risk
+  )
+})
+# Combine all into a single tibble
+MSE <- bind_rows(results_list)
+
+# Show the MSE tibble
+MSE
+```
+
+```{r Empirical_Plot}
+MSE |> 
+  mutate(Error_Diff = Expected_error/Empirical_Error) |> 
+  ggplot(aes(x = Dimensions, y = Error_Diff)) +
+    geom_point(aes(color = Dimensions), size = 3) +
+    scale_color_viridis_c(option = "plasma") +  # better contrast for continuous scale
+    geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+    labs(
+      title = "Expected vs. Empirical Error Difference by Dimension",
+      x = "Dimension (d)",
+      y = "Expected Error/Empirical Error",
+      color = "Dimension"
+    ) +
+    theme_minimal(base_size = 13)+
+    ylim(0.5,1.5)
+
+```

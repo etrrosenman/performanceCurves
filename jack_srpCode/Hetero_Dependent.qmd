@@ -1,0 +1,419 @@
+---
+title: "Hetero_Dependent"
+format: html
+---
+
+```{r}
+# Load required packages
+library(dplyr)        # For basic data and calculation  
+library(tidyverse)    # For easy use and some grahping
+library(stats)        # For basic stats
+library(MASS)         # for mvrnorm (multivariate normal sampling)
+library(mvtnorm)      # for dmvnorm and pmvnorm (density and probabilities)
+library(Matrix)       # for advanced matrix operations
+library(pracma)       # for numerical integration and linear algebra
+library(expm)
+```
+
+```{r}
+#Define the mean for X
+mu <- c(0,0,0,0)
+d <- length(mu)
+
+#Define the covariance matrix of X
+generate_cov_matrix <- function(d) {
+  A <- matrix(rnorm(d * d), nrow = d)
+  cov_matrix <- A %*% t(A)
+  return(cov_matrix)
+}
+
+cov_matrix <- generate_cov_matrix(d = d)
+set.seed(10086)
+
+# Sigma is your covariance matrix (must be symmetric positive definite)
+# Example: Sigma <- matrix(c(2, 1, 1, 3), nrow = 2)
+
+compute_p <- function(Sigma) {
+  # Ensure it's symmetric
+  if (!isSymmetric(Sigma)) {
+    stop("Sigma must be symmetric.")
+  }
+
+  # Compute eigenvalues
+  eigenvalues <- eigen(Sigma, symmetric = TRUE, only.values = TRUE)$values
+
+  # Compute trace
+  tr_Sigma <- sum(eigenvalues)
+
+  # Find the maximum eigenvalue
+  lambda_max <- max(eigenvalues)
+
+  # Compute p
+  p <- tr_Sigma / lambda_max
+  return(p)
+}
+
+# Bock's shrinkage estimator function
+bock_shrinkage <- function(X, Sigma) {
+  # Check dimensions
+  if (length(X) != nrow(Sigma)) {
+    stop("Dimension mismatch between X and Sigma.")
+  }
+
+  # Compute p = trace / max eigenvalue
+  eigenvalues <- eigen(Sigma, symmetric = TRUE, only.values = TRUE)$values
+  tr_Sigma <- sum(eigenvalues)
+  lambda_max <- max(eigenvalues)
+  p <- tr_Sigma / lambda_max
+
+  # Compute quadratic form X^T Σ^{-1} X
+  Sigma_inv <- solve(Sigma)
+  xSx <- as.numeric(t(X) %*% Sigma_inv %*% X)
+
+  # Compute shrinkage factor
+  alpha <- 1 - ((p - 2) / xSx)
+
+  # Return shrunken vector
+  g_X <- alpha * X
+  return(g_X)
+}
+
+
+# One sample from the earlier multivariate normal X
+x_sample <- mvrnorm(n = 1, mu = mu, Sigma = cov_matrix)
+x_shrinked <- bock_shrinkage(x_sample,Sigma = cov_matrix)
+
+x_sample
+x_shrinked
+```
+
+```{r}
+n <- 10000
+
+X <- mvrnorm(n = n, mu = mu, Sigma = cov_matrix)
+
+# Create the loop to calculate Error for each sample and add it to the total error
+error_vec <- sapply(1:nrow(X), function(i) {
+  X_vec <- as.numeric(X[i, ])
+  X_shrinked <- bock_shrinkage(X_vec,cov_matrix)
+  sum((X_shrinked - mu)^2)
+})
+
+# Find total error and MSE
+total_error <- sum(error_vec)
+MSE <- total_error/n
+
+# Print the result
+cat(total_error,"is the total error\n")
+cat(MSE, "is the MSE")
+
+# More cleaning of the workspace by removing variable
+rm(total_error,MSE,error_vec)
+```
+
+```{r SURE_integration}
+# SURE = Tr(Σ) + (p^2-4)E[(Y Σ^-1 Y)/(Y^t Y)^2] - 2(p-2) Tr(Σ) E[1/(Y^t Y)]
+# Compute the simple constant
+
+eigenvalues <- eigen(cov_matrix, symmetric = TRUE, only.values = TRUE)$values
+Tr_sigma <- sum(eigenvalues)
+lambda_max <- max(eigenvalues)
+p <- Tr_sigma / lambda_max
+
+# Joint MGF
+joint_mgf <- function(t, mu, cov_matrix) {
+  len <- length(mu)
+  
+  # Compute inverse square root of sigma
+  sigma_inv_half <- solve(sqrtm(cov_matrix))
+  
+  # Find mu tilda
+  mu_t <- sigma_inv_half %*% mu
+  
+  # Diagonal matrix from sigma_vec
+  D <- diag(2 * t + 1, len, len)
+  
+  # Compute terms
+  first_term <- det(D)^(-1/2)
+  exponent <- ((t(mu_t) %*% solve(D) %*% mu_t) / 2) - (t(mu_t) %*% mu_t / 2)
+  second_term <- exp(exponent)
+  
+  return(first_term * second_term)
+}
+
+# E[1/(Y^t Y)]
+expectation1 <- quadinf(joint_mgf, 0, Inf, mu = mu, cov_matrix = cov_matrix)$Q
+
+# E[(Y Σ^-1 Y)/(Y^t Y)^2]
+
+integrand_mu_2 <- function(t, mu, cov_matrix) {
+  len <- length(mu)
+  
+  # Compute inverse square root of sigma and mu_tilda
+  sigma_inv_half <- solve(sqrtm(cov_matrix))
+  mu_t <- sigma_inv_half %*% mu
+  
+  # Using the same Joint MGF function as B = I, so no change to MGF
+  phi_value <- joint_mgf(t,mu,cov_matrix)
+  
+  # Finding Expectation of w^t %*% R %*% w
+  # = tr(R)+ mu_t^t R mu_t,
+  L <- diag(1/sqrt(1+2*t),len,len)
+  R <-t(L) %*% solve(cov_matrix) %*% L
+  
+  # Using Eigen values to find the trace of R
+  eigenvalues <- eigen(R, symmetric = TRUE, only.values = TRUE)$values
+  Tr_R <- sum(eigenvalues)
+  
+  Expected_WRW <- Tr_R + t(mu_t) %*% R %*% mu_t
+  
+  return(t*phi_value*Expected_WRW)
+}
+expectation2 <- quadinf(integrand_mu_2, 0, Inf, mu = mu, cov_matrix = cov_matrix)$Q
+
+Expected_risk <- Tr_sigma + (p^2-4)*expectation1 - 2*(p-2)*Tr_sigma*expectation2
+  
+cat(Expected_risk, "is the expected risk")
+```
+
+```{r Empirical_Verification}
+
+n_samples <- 1000   # inner loop size
+n_reps <- 100        # outer loop size
+
+index <- 1  # running index for storing errors
+#initiate random table 
+MSE <- tibble()
+
+# Run the simulation using sapply
+results_list <- lapply(seq_len(n_reps), function(rep) {
+  len <- sample(3:15, 1)
+  mu <- runif(len)
+  d <- length(mu)
+  #cov_matrix <- diag(1, len, len)
+  cov_matrix <- generate_cov_matrix(d)
+  eigenvalues <- eigen(cov_matrix, symmetric = TRUE, only.values = TRUE)$values
+  Tr_sigma <- sum(eigenvalues)
+  lambda_max <- max(eigenvalues)
+  p <- Tr_sigma / lambda_max
+  
+  X <- mvrnorm(n = n_samples, mu = mu, Sigma = cov_matrix)
+  
+  # Compute total error using sapply
+  total_error <- sum(sapply(1:nrow(X), function(i) {
+    x_vec <- as.numeric(X[i, ])
+    x_vec_shrinked <- bock_shrinkage(x_vec,Sigma = cov_matrix)
+    sum((x_vec_shrinked - mu)^2)
+  }))
+  
+  MSE_value <- total_error / n_samples
+  
+  # Compute expected error from integral
+  expectation_1 <- quadinf(joint_mgf, 0, Inf, mu = mu, cov_matrix = cov_matrix)$Q
+  expectation_2 <- quadinf(integrand_mu_2, 0, Inf, mu = mu, cov_matrix = cov_matrix)$Q
+  Expected_risk <- Tr_sigma + (p^2-4)*expectation1 - 2*(p-2)*Tr_sigma*expectation2
+  
+  # Return one row as a tibble
+  tibble(
+    Trial = rep,
+    Dimensions = d,
+    Mean = list(mu),
+    Empirical_Error = MSE_value,
+    Expected_error = Expected_risk
+  )
+})
+# Combine all into a single tibble
+MSE <- bind_rows(results_list)
+
+# Show the MSE tibble
+MSE
+```
+
+```{r Empirical_Plot}
+MSE |> 
+  mutate(Error_Diff = Expected_error/Empirical_Error) |> 
+  ggplot(aes(x = Dimensions, y = Error_Diff)) +
+    geom_point(aes(color = Dimensions), size = 3) +
+    scale_color_viridis_c(option = "plasma") +  # better contrast for continuous scale
+    geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+    labs(
+      title = "Expected vs. Empirical Error Difference by Dimension",
+      x = "Dimension (d)",
+      y = "Expected Error/Empirical Error",
+      color = "Dimension"
+    ) +
+    theme_minimal(base_size = 13)+
+    ylim(0.5,1.5)
+
+```
+
+```{r}
+# ---- Build a library of covariance matrices across dimensions ----
+set.seed(123)               # for reproducibility
+dimensions <- 3:8           # which dimensions to sample
+n_per_dim <- 1              # how many Σ to draw per dimension (tweak as you like)
+
+Sigma_results <- vector("list", length(dimensions) * n_per_dim)
+idx <- 1
+
+for (d in dimensions) {
+  for (rep in seq_len(n_per_dim)) {
+    Sigma <- generate_cov_matrix(d)
+
+    # Eigen decomposition (Sigma is symmetric p.d.)
+    eig <- eigen(Sigma, symmetric = TRUE)
+    vals <- eig$values
+    vecs <- eig$vectors
+
+    leading_vector <- vecs[, which.max(vals)]
+    lagging_vector <- vecs[, which.min(vals)]
+
+    Sigma_results[[idx]] <- tibble::tibble(
+      Dimension            = d,
+      Replicate            = rep,
+      Covariance_Matrix    = list(Sigma),
+      Eigenvalues          = list(vals),
+      Leading_Eigenvector  = list(leading_vector),
+      Lagging_Eigenvector  = list(lagging_vector)
+    )
+    idx <- idx + 1
+  }
+}
+
+# Combine into one tibble and add an ID
+Sigma_plot_data <- dplyr::bind_rows(Sigma_results) |>
+  dplyr::mutate(Sigma_ID = dplyr::row_number())
+
+# Preview
+Sigma_plot_data
+
+# Print each covariance matrix cleanly
+for (i in seq_len(nrow(Sigma_plot_data))) {
+  cat("\n--- Covariance Matrix (Dim =", Sigma_plot_data$Dimension[i],
+      ", Replicate =", Sigma_plot_data$Replicate[i], ") ---\n")
+  print(round(Sigma_plot_data$Covariance_Matrix[[i]], 3))
+}
+
+```
+
+```{r}
+# ---- Build μ along leading/lagging eigen-directions for each Σ ----
+set.seed(1)
+
+# Target squared L2 norms for ||μ||^2
+target_l2_norms <- seq(0.01, 5, by = 0.02)
+
+Mu_scaled_results <- vector("list", length = nrow(Sigma_plot_data) * length(target_l2_norms) * 2L)
+k <- 1L
+
+# ---- Helper: Expected risk under your SURE formula ----
+bock_expected_risk <- function(mu, cov_matrix) {
+  ev <- eigen(cov_matrix, symmetric = TRUE, only.values = TRUE)$values
+  Tr_sigma   <- sum(ev)
+  lambda_max <- max(ev)
+  p <- Tr_sigma / lambda_max
+  
+  E1 <- pracma::quadinf(joint_mgf,      0, Inf, mu = mu, cov_matrix = cov_matrix)$Q   # E[1/(Y'Y)]
+  E2 <- pracma::quadinf(integrand_mu_2, 0, Inf, mu = mu, cov_matrix = cov_matrix)$Q   # E[(Y Σ^-1 Y)/(Y'Y)^2]
+  
+  Tr_sigma + (p^2 - 4) * E1 - 2 * (p - 2) * Tr_sigma * E2
+}
+
+# Example:
+# cat(bock_expected_risk(mu, cov_matrix), "is the expected risk\n")
+for (i in seq_len(nrow(Sigma_plot_data))) {
+  d        <- Sigma_plot_data$Dimension[i]
+  Sigma    <- Sigma_plot_data$Covariance_Matrix[[i]]
+  lead_vec <- Sigma_plot_data$Leading_Eigenvector[[i]]
+  lag_vec  <- Sigma_plot_data$Lagging_Eigenvector[[i]]
+
+  # Normalize directions
+  lead_vec <- lead_vec / sqrt(sum(lead_vec^2))
+  lag_vec  <- lag_vec  / sqrt(sum(lag_vec^2))
+
+  for (l2 in target_l2_norms) {
+    sc <- sqrt(l2)
+
+    mu_lead <- as.vector(lead_vec * sc)
+    mu_lag  <- as.vector(lag_vec  * sc)
+
+    # Expected risk via Bock SURE if available; else NA
+    ER_lead <- bock_expected_risk(mu = mu_lead, cov_matrix = Sigma)
+    ER_lag  <- bock_expected_risk(mu = mu_lag, cov_matrix = Sigma)
+
+    Mu_scaled_results[[k]] <- tibble::tibble(
+      Sigma_ID      = Sigma_plot_data$Sigma_ID[i],
+      Dimension     = d,
+      Squared_L2    = l2,
+      Direction     = "Leading",
+      Mu            = list(mu_lead),
+      Covariance    = list(Sigma),
+      Trace_Sigma   = sum(diag(Sigma)),
+      Lambda_Max    = max(eigen(Sigma, symmetric = TRUE, only.values = TRUE)$values),
+      Expected_Risk = ER_lead
+    ); k <- k + 1L
+
+    Mu_scaled_results[[k]] <- tibble::tibble(
+      Sigma_ID      = Sigma_plot_data$Sigma_ID[i],
+      Dimension     = d,
+      Squared_L2    = l2,
+      Direction     = "Lagging",
+      Mu            = list(mu_lag),
+      Covariance    = list(Sigma),
+      Trace_Sigma   = sum(diag(Sigma)),
+      Lambda_Max    = max(eigen(Sigma, symmetric = TRUE, only.values = TRUE)$values),
+      Expected_Risk = ER_lag
+    ); k <- k + 1L
+  }
+}
+
+Mu_scaled_tibble <- dplyr::bind_rows(Mu_scaled_results)
+
+# Preview
+Mu_scaled_tibble
+
+```
+
+```{r}
+# ---- Performance curves: Scaled Expected Risk vs ||μ||^2 ----
+# If Expected_Risk has NAs, fill them using your helper bock_expected_risk(mu, Sigma)
+if (!"Expected_Risk" %in% names(Mu_scaled_tibble) || any(is.na(Mu_scaled_tibble$Expected_Risk))) {
+  stopifnot(exists("bock_expected_risk"))
+  Mu_scaled_tibble <- Mu_scaled_tibble |>
+    dplyr::mutate(
+      Expected_Risk = dplyr::if_else(
+        is.na(Expected_Risk),
+        purrr::map2_dbl(Mu, Covariance, ~ bock_expected_risk(.x, .y)),
+        Expected_Risk
+      )
+    )
+}
+
+my_plot <- Mu_scaled_tibble |>
+  dplyr::mutate(Scaled_Risk = Expected_Risk / Dimension) |>
+  ggplot2::ggplot(
+    ggplot2::aes(
+      x = Squared_L2,
+      y = Scaled_Risk,
+      group = interaction(Sigma_ID, Direction),
+      color = Direction
+    )
+  ) +
+  ggplot2::geom_line(alpha = 0.45, linewidth = 0.6) +                 # one curve per Σ & direction
+  ggplot2::stat_summary(                                              # median overlay by direction
+    aes(group = Direction, color = Direction),
+    fun = median, geom = "line", linewidth = 1.1
+  ) +
+  ggplot2::facet_wrap(~ Dimension, scales = "free_y") +
+  ggplot2::labs(
+    title = "Bock SURE Performance: Scaled Expected Risk vs. ||μ||²",
+    x = expression("||" * mu * "||"^2),
+    y = "Expected Risk / Dimension",
+    color = "Direction"
+  ) +
+  ggplot2::theme_minimal(base_size = 13)
+
+print(my_plot)
+ggplot2::ggsave("my_plot.png", plot = my_plot, width = 8, height = 5, dpi = 300)
+
+```
