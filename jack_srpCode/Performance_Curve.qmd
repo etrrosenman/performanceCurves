@@ -5,6 +5,7 @@ editor: visual
 ---
 
 ```{r}
+# Performance Curve
 # ---- Build a library of covariance matrices across dimensions ----
 set.seed(123)               # for reproducibility
 dimensions <- 3:8           # which dimensions to sample
