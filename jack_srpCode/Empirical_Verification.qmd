@@ -4,7 +4,7 @@ format: html
 ---
 
 ```{r Empirical_Verification}
-
+# Empirical Verification
 n_samples <- 100000   # inner loop size
 n_reps <- 100        # outer loop size
 
