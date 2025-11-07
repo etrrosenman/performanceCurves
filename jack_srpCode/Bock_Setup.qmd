@@ -1,0 +1,161 @@
+---
+title: "Bock_Setup"
+format: html
+---
+
+```{r}
+# Load required packages
+library(dplyr)        # For basic data and calculation  
+library(tidyverse)    # For easy use and some grahping
+library(stats)        # For basic stats
+library(MASS)         # for mvrnorm (multivariate normal sampling)
+library(mvtnorm)      # for dmvnorm and pmvnorm (density and probabilities)
+library(Matrix)       # for advanced matrix operations
+library(pracma)       # for numerical integration and linear algebra
+library(expm)
+```
+
+```{r Bock_shrinkage}
+#Define the mean for X
+mu <- c(0,0,0,0,0,0)
+d <- length(mu)
+
+#Define the covariance matrix of X
+generate_cov_matrix <- function(d) {
+  A <- matrix(rnorm(d * d), nrow = d)
+  cov_matrix <- A %*% t(A)
+  return(cov_matrix)
+}
+
+cov_matrix <- generate_cov_matrix(d = d)
+
+# Sigma is your covariance matrix (must be symmetric positive definite)
+# Example: Sigma <- matrix(c(2, 1, 1, 3), nrow = 2)
+
+#Compute_p for given Sigma
+#Not really needed though
+compute_p <- function(Sigma) {
+  # Ensure it's symmetric
+  if (!isSymmetric(Sigma)) {
+    stop("Sigma must be symmetric.")
+  }
+  # Compute eigenvalues
+  eigenvalues <- eigen(Sigma, symmetric = TRUE, only.values = TRUE)$values
+  # Compute trace
+  tr_Sigma <- sum(eigenvalues)
+  # Find the maximum eigenvalue
+  lambda_max <- max(eigenvalues)
+  # Compute p
+  p <- tr_Sigma / lambda_max
+  return(p)
+}
+
+# Bock's shrinkage estimator function
+bock_shrinkage <- function(X, Sigma) {
+  # Check dimensions
+  if (length(X) != nrow(Sigma)) {
+    stop("Dimension mismatch between X and Sigma.")
+  }
+  # Compute p = trace / max eigenvalue
+  eigenvalues <- eigen(Sigma, symmetric = TRUE, only.values = TRUE)$values
+  tr_Sigma <- sum(eigenvalues)
+  lambda_max <- max(eigenvalues)
+  p <- tr_Sigma / lambda_max
+
+  # Compute quadratic form X^T Σ^{-1} X
+  Sigma_inv <- solve(Sigma)
+  xSx <- as.numeric(t(X) %*% Sigma_inv %*% X)
+
+  # Return shrunken vector
+  g_X <- X - (p-2)/xSx * X
+  return(g_X)
+}
+
+
+# One sample from the earlier multivariate normal X
+x_sample <- mvrnorm(n = 1, mu = mu, Sigma = cov_matrix)
+x_shrinked <- bock_shrinkage(x_sample,Sigma = cov_matrix)
+
+x_sample
+x_shrinked
+```
+
+```{r Empircal_Error}
+n <- 10000
+X <- mvrnorm(n = n, mu = mu, Sigma = cov_matrix)
+
+# Create the loop to calculate Error for each sample and add it to the total error
+error <- mean(sapply(1:nrow(X), function(i) {
+  X_vec <- as.numeric(X[i, ])
+  X_shrinked <- bock_shrinkage(X_vec,cov_matrix)
+  sum((X_shrinked - mu)^2)
+}))
+
+# Print the result
+cat(error, "is the MSE")
+```
+
+```{r SURE_integration}
+# SURE = Tr(Σ) + (p^2-4)E[(Y Σ^-1 Y)/(Y^t Y)^2] - 2(p-2) Tr(Σ) E[1/(Y^t Y)]
+# Compute the simple constant
+
+eigenvalues <- eigen(cov_matrix, symmetric = TRUE, only.values = TRUE)$values
+Tr_sigma <- sum(eigenvalues)
+lambda_max <- max(eigenvalues)
+p <- Tr_sigma / lambda_max
+
+# Joint MGF
+joint_mgf <- function(t, mu, cov_matrix) {
+  len <- length(mu)
+  
+  # Compute inverse square root of sigma
+  sigma_inv_half <- solve(sqrtm(cov_matrix))
+  
+  # Find mu tilda
+  mu_t <- sigma_inv_half %*% mu
+  
+  # Diagonal matrix from sigma_vec
+  D <- diag(2 * t + 1, len, len)
+  
+  # Compute terms
+  first_term <- det(D)^(-1/2)
+  exponent <- ((t(mu_t) %*% solve(D) %*% mu_t) / 2) - (t(mu_t) %*% mu_t / 2)
+  second_term <- exp(exponent)
+  
+  return(first_term * second_term)
+}
+
+# E[1/(Y^t Y)]
+expectation1 <- quadinf(joint_mgf, 0, Inf, mu = mu, cov_matrix = cov_matrix)$Q
+
+# E[(Y Σ^-1 Y)/(Y^t Y)^2]
+
+integrand_mu_2 <- function(t, mu, cov_matrix) {
+  len <- length(mu)
+  
+  # Compute inverse square root of sigma and mu_tilda
+  sigma_inv_half <- solve(sqrtm(cov_matrix))
+  mu_t <- sigma_inv_half %*% mu
+  
+  # Using the same Joint MGF function as B = I, so no change to MGF
+  phi_value <- joint_mgf(t,mu,cov_matrix)
+  
+  # Finding Expectation of w^t %*% R %*% w
+  # = tr(R)+ mu_t^t R mu_t,
+  L <- diag(1/sqrt(1+2*t),len,len)
+  R <-t(L) %*% solve(cov_matrix) %*% L
+  
+  # Using Eigen values to find the trace of R
+  eigenvalues <- eigen(R, symmetric = TRUE, only.values = TRUE)$values
+  Tr_R <- sum(eigenvalues)
+  
+  Expected_WRW <- Tr_R + t(mu_t) %*% R %*% mu_t
+  
+  return(t*phi_value*Expected_WRW)
+}
+expectation2 <- quadinf(integrand_mu_2, 0, Inf, mu = mu, cov_matrix = cov_matrix)$Q
+
+Expected_risk <- Tr_sigma + (p^2-4)*expectation2 - 2*(p-2)*Tr_sigma*expectation1
+  
+cat(Expected_risk, "is the expected risk")
+```
