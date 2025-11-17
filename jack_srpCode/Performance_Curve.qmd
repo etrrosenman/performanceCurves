@@ -175,3 +175,11 @@ print(my_plot)
 ggplot2::ggsave("my_plot.png", plot = my_plot, width = 8, height = 5, dpi = 300)
 
 ```
+
+build curve on sigma inverse mu on the x axis
+
+y aaxis on scaled risk
+
+and one horizontal line for the trace
+
+another two lines for leading and algging eigen value direction
