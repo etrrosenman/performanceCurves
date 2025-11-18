@@ -1,0 +1,149 @@
+---
+title: "Untitled"
+author: "Shirley Fang"
+date: "2025-11-11"
+output: html_document
+---
+
+
+```{r}
+# Load packages
+library(dplyr)        
+library(tidyverse)    
+library(stats)        
+library(MASS)         
+library(mvtnorm)      
+library(Matrix)       
+library(pracma)       
+```
+
+
+```{r}
+# Base simulation parameters 
+d <- 3
+mu <- rep(0, d)                      # X mean vector
+xi <- c(0.5, rep(0, d - 1))          # xi = mu - E[Y]
+sigma_vec <- c(1, 2, 3)              # heteroskedastic variances
+Sigma <- diag(sigma_vec)             # diagonal covariance matrix
+trace <- sum(sigma_vec)              # tr(Sigma)
+
+
+# Empirical shrinkage function
+# δ_{d-2}(x,y) = x - (d-2) * (x - y) / ((x - y)^T Σ^{-1} (x - y))
+shrinkage_function <- function(X, Y, sigma_vec) {
+  stopifnot(is.numeric(X), is.numeric(Y), length(X) == length(Y))
+  d <- length(X)
+  Sigma <- diag(sigma_vec)
+
+  diff  <- X - Y
+  denom <- as.numeric(t(diff) %*% solve(Sigma, diff))   # (x−y)^T Σ^{-1} (x−y)
+  if (denom <= 0) denom <- .Machine$double.eps          
+
+  X - (d - 2) * diff / denom
+}
+
+
+# Check whether the shrinage function actually shrinks the value
+X_sample <- MASS::mvrnorm(n = 1, mu = mu, Sigma = Sigma)
+Y_sample <- mu - xi
+
+x_shrinked <- shrinkage_function(X_sample, Y_sample, sigma_vec)
+
+X_sample
+Y_sample
+x_shrinked
+```
+
+
+```{r}
+# Empirical MSE via simulation for X ~ N(mu, Sigma) and fixed Y with E[Y]=mu - xi
+n <- 10000
+
+Y <- mu - xi 
+X <- mvrnorm(n = n, mu = mu, Sigma = Sigma)
+
+# Create the loop to calculate Error for each sample and add it to the total error
+error_vec <- sapply(1:nrow(X), function(i) {
+  X_vec <- as.numeric(X[i, ])
+  X_shrinked <- shrinkage_function(X_vec, Y, sigma_vec)   # δ_{d-2}(x,y)
+  sum((X_shrinked - mu)^2)
+})
+
+# Find total error and MSE
+total_error <- sum(error_vec)
+MSE <- total_error / n
+
+# Print the result
+cat(total_error, "is the total error\n")
+cat(MSE, "is the MSE\n")
+
+# More cleaning of the workspace by removing variable
+rm(total_error,MSE,error_vec)
+```
+
+
+```{r}
+# ====== EXPECTATIONS FOR THE COMBINED ESTIMATOR (HETEROSKEDASTIC) ======
+# D(t) = ∏_{i=1}^d (1 + 2 t)^(-1/2)
+# E(t) = exp( - [t/(1+2t)] * μᵀ Σ^{-1} μ )
+
+# helpers (quadratic forms in μ)
+mu_SigInv_mu <- function(mu, Sigma) as.numeric(t(mu) %*% solve(Sigma, mu))
+mu_Sig2_mu   <- function(mu, Sigma) as.numeric(t(mu) %*% (Sigma %*% (Sigma %*% mu)))
+
+# D(t)
+D_t <- function(t, Sigma) {
+  # stable log-determinant for numerics
+  ld <- determinant(diag(nrow(Sigma)) + 2 * t * Sigma, logarithm = TRUE)$modulus
+  as.numeric(exp(-0.5 * ld))
+}
+
+# E(t)
+E_t <- function(t, mu, Sigma) {
+  snr <- mu_SigInv_mu(mu, Sigma)  # μᵀ Σ⁻¹ μ
+  exp( - (t / (1 + 2*t)) * snr )
+}
+
+# φ(0,-t) = D(t) * E(t)
+joint_mgf <- function(t, mu, Sigma) {
+  D_t(t, Sigma) * E_t(t, mu, Sigma)
+}
+
+# I1 = ∫_0^∞ D(t) E(t) dt
+expectation_I1 <- function(mu, Sigma) {
+  pracma::quadinf(function(t) joint_mgf(t, mu, Sigma), 0, Inf)$Q
+}
+
+# I2 = ∫_0^∞ t D(t) E(t) [ tr(Σ)/(1+2t) + (μᵀ Σ² μ)/(1+2t)² ] dt
+integrand_I2 <- function(t, mu, Sigma) {
+  trS  <- sum(diag(Sigma))
+  num2 <- mu_Sig2_mu(mu, Sigma)
+  de   <- joint_mgf(t, mu, Sigma)
+  t * de * ( trS / (1 + 2*t) + num2 / (1 + 2*t)^2 )
+}
+
+expectation_I2 <- function(mu, Sigma) {
+  pracma::quadinf(integrand_I2, 0, Inf, mu = mu, Sigma = Sigma)$Q
+}
+
+# Expected risk
+expected_risk <- function(mu, Sigma) {
+  d   <- length(mu)
+  trS <- sum(diag(Sigma))
+  I1  <- expectation_I1(mu, Sigma)
+  I2  <- expectation_I2(mu, Sigma)
+  trS + (d^2 - 4) * I2 - 2 * (d - 2) * trS * I1
+}
+
+# Compute the expected risk
+Expected_risk <- expected_risk(mu, Sigma)
+cat(Expected_risk, "is the expected risk\n")
+
+```
+
+
+
+
+
+
+
