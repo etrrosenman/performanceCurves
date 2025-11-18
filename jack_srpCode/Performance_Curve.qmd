@@ -7,8 +7,8 @@ editor: visual
 ```{r}
 # Performance Curve
 # ---- Build a library of covariance matrices across dimensions ----
-set.seed(123)               # for reproducibility
-dimensions <- 3:8           # which dimensions to sample
+set.seed(10086)               # for reproducibility
+dimensions <- 4:10           # which dimensions to sample
 n_per_dim <- 1              # how many Σ to draw per dimension (tweak as you like)
 
 Sigma_results <- vector("list", length(dimensions) * n_per_dim)
@@ -56,10 +56,10 @@ for (i in seq_len(nrow(Sigma_plot_data))) {
 
 ```{r}
 # ---- Build μ along leading/lagging eigen-directions for each Σ ----
-set.seed(1)
+set.seed(10086)
 
 # Target squared L2 norms for ||μ||^2
-target_l2_norms <- seq(0.01, 5, by = 0.02)
+target_l2_norms <- seq(0.01, 10, by = 0.01)
 
 Mu_scaled_results <- vector("list", length = nrow(Sigma_plot_data) * length(target_l2_norms) * 2L)
 k <- 1L
@@ -74,7 +74,7 @@ bock_expected_risk <- function(mu, cov_matrix) {
   E1 <- pracma::quadinf(joint_mgf,      0, Inf, mu = mu, cov_matrix = cov_matrix)$Q   # E[1/(Y'Y)]
   E2 <- pracma::quadinf(integrand_mu_2, 0, Inf, mu = mu, cov_matrix = cov_matrix)$Q   # E[(Y Σ^-1 Y)/(Y'Y)^2]
   
-  Tr_sigma + (p^2 - 4) * E1 - 2 * (p - 2) * Tr_sigma * E2
+  Tr_sigma + (p^2 - 4) * E2 - 2 * (p - 2) * Tr_sigma * E1
 }
 
 # Example:
@@ -129,50 +129,67 @@ Mu_scaled_tibble <- dplyr::bind_rows(Mu_scaled_results)
 
 # Preview
 Mu_scaled_tibble
-
 ```
 
 ```{r}
-# ---- Performance curves: Scaled Expected Risk vs ||μ||^2 ----
-# If Expected_Risk has NAs, fill them using your helper bock_expected_risk(mu, Sigma)
-if (!"Expected_Risk" %in% names(Mu_scaled_tibble) || any(is.na(Mu_scaled_tibble$Expected_Risk))) {
-  stopifnot(exists("bock_expected_risk"))
-  Mu_scaled_tibble <- Mu_scaled_tibble |>
-    dplyr::mutate(
-      Expected_Risk = dplyr::if_else(
-        is.na(Expected_Risk),
-        purrr::map2_dbl(Mu, Covariance, ~ bock_expected_risk(.x, .y)),
-        Expected_Risk
-      )
-    )
-}
+# ---- Performance curves: Scaled Expected Risk vs ||Σ^{-1} μ||^2 ----
+# Compute ||Σ^{-1} μ||^2 and scaled risk
+Mu_scaled_tibble <- Mu_scaled_tibble |>
+  mutate(
+    Scaled_Risk = Expected_Risk / Dimension,
+    Mahalanobis = map2_dbl(Mu, Covariance, ~ as.numeric(t(.x) %*% solve(.y, .x)))
+  )
 
-my_plot <- Mu_scaled_tibble |>
-  dplyr::mutate(Scaled_Risk = Expected_Risk / Dimension) |>
-  ggplot2::ggplot(
-    ggplot2::aes(
-      x = Squared_L2,
-      y = Scaled_Risk,
-      group = interaction(Sigma_ID, Direction),
+Mu_scaled_tibble
+```
+
+```{r}
+
+# --- Build baseline table: trace(Sigma)/d for each dimension ---
+baseline_tbl <- Mu_scaled_tibble |>
+  distinct(Dimension, Trace_Sigma) |>
+  group_by(Dimension) |>
+  summarise(
+    Baseline = median(Trace_Sigma / Dimension),
+    .groups = "drop"
+  )
+
+Mu_centered <- Mu_scaled_tibble |>
+  left_join(baseline_tbl, by = "Dimension") |>
+  mutate(
+    y_centered = Scaled_Risk - Baseline
+  )
+max_range <- max(abs(Mu_centered$y_centered))
+
+my_plot_scaled <- Mu_centered |>
+  ggplot(
+    aes(
+      x     = Squared_L2,
+      y     = y_centered,
       color = Direction
     )
   ) +
-  ggplot2::geom_line(alpha = 0.45, linewidth = 0.6) +                 # one curve per Σ & direction
-  ggplot2::stat_summary(                                              # median overlay by direction
-    aes(group = Direction, color = Direction),
-    fun = median, geom = "line", linewidth = 1.1
-  ) +
-  ggplot2::facet_wrap(~ Dimension, scales = "free_y") +
-  ggplot2::labs(
-    title = "Bock SURE Performance: Scaled Expected Risk vs. ||μ||²",
-    x = expression("||" * mu * "||"^2),
-    y = "Expected Risk / Dimension",
+  geom_line(aes(group = Direction), linewidth = 1.1) +
+  
+  # horizontal zero line = baseline
+  geom_hline(yintercept = 0, linetype = "dashed", color = "black", linewidth = 0.9) +
+  
+  facet_wrap(~ Dimension, scales = "free_y") +
+  
+  labs(
+    title = "Bock SURE Performance: Scaled Risk (Centered) vs ||μ||²",
+    x     = expression("||" * mu * "||"^2),
+    y     = "Centered Expected Risk / Dimension",
     color = "Direction"
   ) +
-  ggplot2::theme_minimal(base_size = 13)
+  
+  # NOW you can use a single ylim, because all facets have baseline == 0
+  ylim(-max_range, max_range) +
+  
+  theme_minimal(base_size = 13)
 
-print(my_plot)
-ggplot2::ggsave("my_plot.png", plot = my_plot, width = 8, height = 5, dpi = 300)
+
+print(my_plot_scaled)
 
 ```
 
