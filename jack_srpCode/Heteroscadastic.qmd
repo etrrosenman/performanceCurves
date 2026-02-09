@@ -17,9 +17,8 @@ library(pracma)       # for numerical integration and linear algebra
 ```
 
 ```{r}
-
 # Set base simulation parameters
-d <- 3      # Random dimension between 3 and 6
+d <- 3
 mu <- c(0,0,0)     # Mean vector
 sigma_vec <- c(1,2,3)  # Heteroscedastic variances
 Sigma <- diag(sigma_vec)       # Diagonal covariance matrix
@@ -43,8 +42,6 @@ x_shrinked
 ```
 
 ```{r Iterated_Error_onemean}
-
-
 n <- 10000
 
 X <- mvrnorm(n = n, mu = mu, Sigma = Sigma)
@@ -71,36 +68,29 @@ rm(total_error,MSE,error_vec)
 ```{r Expectation}
 # joint MGF for phi(0, -t)
 # This function is already vectorized using sapply, so it's suitable for integrate.
-joint_mgf <- function(t, mu, sigma_vec) {
-  
-  # Diagonal matrix from sigma_vec
-  D <- diag(2 * t * sigma_vec + 1)
-  
+joint_mgf <- function(t, mu) {
+  D <- diag(2*t + 1,nrow = length(mu))
   # Compute terms
   first_term <- det(D)^(-1/2)
-  exponent <- ((t(mu) %*% solve(D) %*% mu) / 2) - (t(mu) %*% mu / 2)
+  exponent <- (((t(mu) %*% solve(D) %*% mu) / 2) - (t(mu) %*% mu / 2))
   second_term <- exp(exponent)
   
   return(first_term * second_term)
 }
-
-
-expectation_1 <- quadinf(joint_mgf, 0, Inf, mu = mu, sigma_vec = sigma_vec)$Q
+expectation_1 <- quadinf(joint_mgf, 0, Inf, mu = mu)$Q
 
 integrand_mu_2_1 <- function(t, mu, sigma_vec) {
-  inv_diag <- 1 / (2*t*sigma_vec + 1)
-  L <- diag(sqrt(inv_diag))
-
-  R <- t(L) %*% diag(sigma_vec^2) %*% L
+  inv_D <- solve(diag(2*t + 1,nrow = length(mu)))
+  L <- sqrt(inv_D)
+  R <- t(L) %*% diag(sigma_vec) %*% L
+  
   mu_tilda <- t(L) %*% mu
+  second_term <- sum(diag(R)) + t(mu_tilda) %*% R %*% mu_tilda
   
-  second_term <- sum(R) + t(mu_tilda) %*% R %*% mu_tilda
-  
-  phi_value <- joint_mgf(t,mu,sigma_vec)
+  phi_value <- joint_mgf(t,mu)
   
   return(t*phi_value*second_term)
 }
-
 expectation_2 <- pracma::quadinf(integrand_mu_2_1, 0, Inf, mu = mu, sigma_vec = sigma_vec)$Q
 
 Expected_risk <- trace - trace^2 * expectation_1 + 4 * trace * expectation_2
@@ -109,8 +99,6 @@ cat(Expected_risk, "is the expected risk")
 ```
 
 ```{r}
-
-
 n_samples <- 10000   # inner loop size
 n_reps <- 100       # outer loop size
 
@@ -120,7 +108,7 @@ MSE <- tibble()
 
 # Run the simulation using sapply
 results_list <- lapply(seq_len(n_reps), function(rep) {
-  len <- sample(3:6, 1)
+  len <- sample(3:20, 1)
   mu <- runif(len)
   d <- length(mu)
   sigma_vec <- runif(len)
@@ -139,7 +127,7 @@ results_list <- lapply(seq_len(n_reps), function(rep) {
   MSE_value <- total_error / n_samples
   
   # Compute expected error from integral
-  expectation_1 <- quadinf(joint_mgf, 0, Inf, mu = mu, sigma_vec = sigma_vec)$Q
+  expectation_1 <- quadinf(joint_mgf, 0, Inf, mu = mu)$Q
   expectation_2 <- quadinf(integrand_mu_2_1, 0, Inf, mu = mu, sigma_vec = sigma_vec)$Q
   Expected_risk <- trace - trace^2 * expectation_1 + 4 * trace * expectation_2
   
@@ -163,15 +151,15 @@ MSE
 # Analasis of MSE
 
 MSE |> 
-  mutate(Error_Diff = Expected_error - Empirical_Error) |> 
-  ggplot(aes(x = Dimensions, y = Error_Diff)) +
+  mutate(Error_Ratio = Expected_error/Empirical_Error) |> 
+  ggplot(aes(x = Dimensions, y = Error_Ratio)) +
     geom_point(aes(color = Dimensions), size = 3) +
     scale_color_viridis_c(option = "plasma") +  # better contrast for continuous scale
-    geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+    geom_hline(yintercept = 1, linetype = "dashed", color = "gray50") +
     labs(
       title = "Expected vs. Empirical Error Difference by Dimension",
       x = "Dimension (d)",
-      y = "Expected Error - Empirical Error",
+      y = "Expected Error/Empirical Error",
       color = "Dimension"
     ) +
     theme_minimal(base_size = 13)
@@ -288,7 +276,7 @@ Mu_scaled_tibble <- Mu_scaled_tibble |>
   mutate(
     Trace = sum(unlist(Sigma_Vec)),
     
-    Expectation_1 = quadinf(joint_mgf, 0, Inf, mu = Mu, sigma_vec = Sigma_Vec)$Q,
+    Expectation_1 = quadinf(joint_mgf, 0, Inf, mu = Mu)$Q,
     
     Expectation_2 = quadinf(integrand_mu_2_1, 0, Inf, mu = Mu, sigma_vec = Sigma_Vec)$Q,
     
