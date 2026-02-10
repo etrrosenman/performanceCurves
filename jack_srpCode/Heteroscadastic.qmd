@@ -166,15 +166,13 @@ MSE |>
 ```
 
 ```{r}
-# Settings
-#target_sigmas <- replicate(500, runif(sample(2:4, 1), min = 0.1, max = 3), simplify = FALSE)
+set.seed(123)
 
 # Settings: n distinct dimensions
 dimensions <- 2:6
 
-# Generate one sigma_vec per dimension
+# Generate one sigma_vec per dimension (diagonal entries)
 target_sigmas <- lapply(dimensions, function(d) runif(d, min = 0.1, max = 3))
-set.seed(123)
 
 # Store results
 Sigma_results <- list()
@@ -183,41 +181,115 @@ for (sigma_vec in target_sigmas) {
   d <- length(sigma_vec)
   Sigma <- diag(sigma_vec)
   
-  # Eigen decomposition
   eig <- eigen(Sigma)
-  
   leading_vector <- eig$vectors[, which.max(eig$values)]
   lagging_vector <- eig$vectors[, which.min(eig$values)]
   
-  # Store in tibble
   Sigma_results[[length(Sigma_results) + 1]] <- tibble(
-    Dimension = d,
-    Sigma_Vec = list(sigma_vec),
+    Dimension = d,               
+    Sigma_Vec = list(sigma_vec),            # diag entries
+    Covariance_Matrix = list(Sigma),
     Leading_Eigenvector = list(leading_vector),
     Lagging_Eigenvector = list(lagging_vector)
   )
 }
 
-# Combine into a tibble
-Sigma_plot_data <- bind_rows(Sigma_results)
-
-# Add Covariance Matrix column (diagonal from sigma_vec)
-Sigma_plot_data <- Sigma_plot_data |> 
-  mutate(Covariance_Matrix = map(Sigma_Vec, ~ diag(.x)))
-
-Sigma_plot_data <- Sigma_plot_data |> 
+Sigma_plot_data <- bind_rows(Sigma_results) |>
   mutate(Sigma_ID = row_number())
 
-# Show preview
+# Preview
 Sigma_plot_data
 
 # Print each covariance matrix cleanly
 for (i in seq_len(nrow(Sigma_plot_data))) {
-  cat("\n--- Covariance Matrix for Dimension", Sigma_plot_data$Dimension[i], "---\n")
+  cat("\n--- Covariance Matrix for Dimension", Sigma_plot_data$Dimension[i], 
+      "(Sigma_ID =", Sigma_plot_data$Sigma_ID[i], ") ---\n")
   print(round(Sigma_plot_data$Covariance_Matrix[[i]], 3))
 }
+```
 
+```{r}
+# Target values for || Sigma^{-1/2} mu ||^2  (i.e., mu' Sigma^{-1} mu)
+target_maha_sq <- seq(0.01, 10, by = 0.01)
 
+# Store results
+Mu_scaled_results <- list()
+
+for (i in seq_len(nrow(Sigma_plot_data))) {
+  dim <- Sigma_plot_data$Dimension[i]
+  lead_vec <- Sigma_plot_data$Leading_Eigenvector[[i]]
+  lag_vec  <- Sigma_plot_data$Lagging_Eigenvector[[i]]
+  Sigma_Vec <- Sigma_plot_data$Sigma_Vec[[i]]   # diagonal entries of Sigma
+  
+  # Normalize direction vectors to unit Euclidean norm (just in case)
+  lead_vec <- lead_vec / sqrt(sum(lead_vec^2))
+  lag_vec  <- lag_vec  / sqrt(sum(lag_vec^2))
+  
+  # Quadratic forms v' Sigma^{-1} v for diagonal Sigma
+  lead_quad <- sum(lead_vec^2 / Sigma_Vec)
+  lag_quad  <- sum(lag_vec^2  / Sigma_Vec)
+  
+  for (t in target_maha_sq) {
+    # Choose c so that ||Sigma^{-1/2}(c v)||^2 = t  <=>  c^2 (v' Sigma^{-1} v) = t
+    c_lead <- sqrt(t / lead_quad)
+    c_lag  <- sqrt(t / lag_quad)
+    
+    mu_lead <- lead_vec * c_lead
+    mu_lag  <- lag_vec  * c_lag
+    
+    Mu_scaled_results[[length(Mu_scaled_results) + 1]] <- tibble(
+      Dimension  = dim,
+      Sigma_ID   = i,      # tracks which Sigma row it comes from
+      Squared_L2 = t,      # now means ||Sigma^{-1/2} mu||^2
+      Direction  = "Leading",
+      Mu         = list(mu_lead)
+    )
+    
+    Mu_scaled_results[[length(Mu_scaled_results) + 1]] <- tibble(
+      Dimension  = dim,
+      Sigma_ID   = i,
+      Squared_L2 = t,      # now means ||Sigma^{-1/2} mu||^2
+      Direction  = "Lagging",
+      Mu         = list(mu_lag)
+    )
+  }
+}
+
+# Combine into one tibble
+Mu_scaled_tibble <- bind_rows(Mu_scaled_results)
+
+# If Sigma_plot_data already has Sigma_ID == row number, the join below is optional.
+# If not, create it before joining:
+# Sigma_plot_data <- Sigma_plot_data |> mutate(Sigma_ID = row_number())
+
+Mu_scaled_tibble <- Mu_scaled_tibble |>
+  left_join(dplyr::select(Sigma_plot_data, Sigma_Vec, Sigma_ID), by = "Sigma_ID")
+
+# ---- Optional sanity check: verify scaling ----
+# Should be very close to Squared_L2
+Mu_scaled_tibble <- Mu_scaled_tibble |>
+  rowwise() |>
+  mutate(Maha_check = sum(unlist(Mu)^2 / Sigma_Vec)) |>
+  ungroup()
+
+print(Mu_scaled_tibble |> summarise(max_abs_err = max(abs(Maha_check - Squared_L2))))
+
+# ---- Your existing risk computation ----
+Mu_scaled_tibble <- Mu_scaled_tibble |> 
+  rowwise() |> 
+  mutate(
+    Trace = sum(unlist(Sigma_Vec)),
+    
+    Expectation_1 = quadinf(joint_mgf, 0, Inf, mu = unlist(Mu))$Q,
+    
+    Expectation_2 = quadinf(integrand_mu_2_1, 0, Inf, mu = unlist(Mu), sigma_vec = unlist(Sigma_Vec))$Q,
+    
+    Expected_Risk = Trace - Trace^2 * Expectation_1 + 4 * Trace * Expectation_2
+  ) |> 
+  ungroup()
+
+# Preview
+Mu_scaled_tibble
 ```
 
 ```{r}
