@@ -19,8 +19,8 @@ library(pracma)       # for numerical integration and linear algebra
 ```{r}
 # Set base simulation parameters
 d <- 3
-mu <- c(0,0,0)     # Mean vector
-sigma_vec <- c(1,2,3)  # Heteroscedastic variances
+mu <- c(0,0,0,0,0,0)     # Mean vector
+sigma_vec <- c(1,2,3,1,2,3)  # Heteroscedastic variances
 Sigma <- diag(sigma_vec)       # Diagonal covariance matrix
 trace <- sum(sigma_vec)       # Find the trace of sigma_vec
 
