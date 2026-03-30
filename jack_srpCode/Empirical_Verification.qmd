@@ -5,7 +5,7 @@ format: html
 
 ```{r Empirical_Verification}
 
-n_samples <- 100000   # inner loop size
+n_samples <- 10000   # inner loop size
 n_reps <- 100        # outer loop size
 
 index <- 1  # running index for storing errors
@@ -35,9 +35,13 @@ results_list <- lapply(seq_len(n_reps), function(rep) {
   
   MSE_value <- total_error / n_samples
   
-  # Compute expected error from integral
-  expectation_1 <- quadinf(joint_mgf, 0, Inf, mu = mu, cov_matrix = cov_matrix)$Q
-  expectation_2 <- quadinf(integrand_mu_2, 0, Inf, mu = mu, cov_matrix = cov_matrix)$Q
+  # Precompute mu_t = Sigma^{-1/2} mu for the integrands
+  sigma_inv_half <- solve(sqrtm(cov_matrix))
+  mu_t <- as.vector(sigma_inv_half %*% mu)
+
+  # Compute expected error from integral (corrected SURE)
+  expectation_1 <- quadinf(joint_mgf, 0, Inf, mu_t = mu_t)$Q
+  expectation_2 <- quadinf(integrand_mu_2, 0, Inf, mu_t = mu_t, cov_matrix = cov_matrix)$Q
   Expected_risk <- Tr_sigma + (p^2-4)*expectation_2 - 2*(p-2)*Tr_sigma*expectation_1
   
   # Return one row as a tibble
@@ -62,14 +66,13 @@ MSE |>
   ggplot(aes(x = Dimensions, y = Error_Diff)) +
     geom_point(aes(color = Dimensions), size = 3) +
     scale_color_viridis_c(option = "plasma") +  # better contrast for continuous scale
-    geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+    geom_hline(yintercept = 1, linetype = "dashed", color = "gray50") +
     labs(
       title = "Expected vs. Empirical Error Difference by Dimension",
       x = "Dimension (d)",
       y = "Expected Error/Empirical Error",
       color = "Dimension"
     ) +
-    theme_minimal(base_size = 13)+
-    ylim(0.5,1.5)
+    theme_minimal(base_size = 13)
 
 ```

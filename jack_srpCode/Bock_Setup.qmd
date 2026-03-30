@@ -96,7 +96,8 @@ cat(error, "is the MSE")
 ```
 
 ```{r SURE_integration}
-# SURE = Tr(Σ) + (p^2-4)E[(Y Σ^-1 Y)/(Y^t Y)^2] - 2(p-2) Tr(Σ) E[1/(Y^t Y)]
+# SURE = Tr(Σ) + (p^2-4)E[Y'ΣY/(Y'Y)^2] - 2(p-2) Tr(Σ) E[1/(Y'Y)]
+# where Y = Σ^{-1/2} X, so Y'Y = X'Σ^{-1}X and Y'ΣY = ||X||^2
 # Compute the simple constant
 
 eigenvalues <- eigen(cov_matrix, symmetric = TRUE, only.values = TRUE)$values
@@ -104,58 +105,44 @@ Tr_sigma <- sum(eigenvalues)
 lambda_max <- max(eigenvalues)
 p <- Tr_sigma / lambda_max
 
-# Joint MGF
-joint_mgf <- function(t, mu, cov_matrix) {
-  len <- length(mu)
-  
-  # Compute inverse square root of sigma
-  sigma_inv_half <- solve(sqrtm(cov_matrix))
-  
-  # Find mu tilda
-  mu_t <- sigma_inv_half %*% mu
-  
-  # Diagonal matrix from sigma_vec
-  D <- diag(2 * t + 1, len, len)
-  
-  # Compute terms
-  first_term <- det(D)^(-1/2)
-  exponent <- ((t(mu_t) %*% solve(D) %*% mu_t) / 2) - (t(mu_t) %*% mu_t / 2)
+# Precompute Sigma^{-1/2} and mu_tilda once (expensive, avoid repeating in integrands)
+sigma_inv_half <- solve(sqrtm(cov_matrix))
+mu_t <- as.vector(sigma_inv_half %*% mu)
+
+# Joint MGF: E[exp(-t * Y'Y)] where Y = Sigma^{-1/2} X
+# D = (1+2t)*I since Y ~ N(mu_t, I)
+joint_mgf <- function(t, mu_t) {
+  len <- length(mu_t)
+  D_val <- 1 + 2 * t
+  first_term <- D_val^(-len / 2)
+  exponent <- -t * sum(mu_t^2) / D_val
   second_term <- exp(exponent)
-  
   return(first_term * second_term)
 }
 
-# E[1/(Y^t Y)]
-expectation1 <- quadinf(joint_mgf, 0, Inf, mu = mu, cov_matrix = cov_matrix)$Q
+# E[1/(Y'Y)]
+expectation1 <- quadinf(joint_mgf, 0, Inf, mu_t = mu_t)$Q
 
-# E[(Y Σ^-1 Y)/(Y^t Y)^2]
+# E[Y'ΣY/(Y'Y)^2] = E[||X||^2 / (X'Σ^{-1}X)^2]
+# Under tilted measure Q (tilting by e^{-tY'Y}):
+#   Y ~ N(mu_t/(1+2t), I/(1+2t))
+#   E_Q[Y'AY] = tr(A)/(1+2t) + mu_t'A mu_t/(1+2t)^2
+integrand_mu_2 <- function(t, mu_t, cov_matrix) {
+  D_val <- 1 + 2 * t
 
-integrand_mu_2 <- function(t, mu, cov_matrix) {
-  len <- length(mu)
-  
-  # Compute inverse square root of sigma and mu_tilda
-  sigma_inv_half <- solve(sqrtm(cov_matrix))
-  mu_t <- sigma_inv_half %*% mu
-  
-  # Using the same Joint MGF function as B = I, so no change to MGF
-  phi_value <- joint_mgf(t,mu,cov_matrix)
-  
-  # Finding Expectation of w^t %*% R %*% w
-  # = tr(R)+ mu_t^t R mu_t,
-  L <- diag(1/sqrt(1+2*t),len,len)
-  R <-t(L) %*% solve(cov_matrix) %*% L
-  
-  # Using Eigen values to find the trace of R
-  eigenvalues <- eigen(R, symmetric = TRUE, only.values = TRUE)$values
-  Tr_R <- sum(eigenvalues)
-  
-  Expected_WRW <- Tr_R + t(mu_t) %*% R %*% mu_t
-  
-  return(t*phi_value*Expected_WRW)
+  phi_value <- joint_mgf(t, mu_t)
+
+  # E_Q[Y'ΣY] = tr(Σ)/(1+2t) + mu_t'Σ mu_t/(1+2t)^2
+  Tr_term <- sum(diag(cov_matrix)) / D_val
+  mean_term <- sum(mu_t * (cov_matrix %*% mu_t)) / D_val^2
+
+  Expected_WRW <- Tr_term + mean_term
+
+  return(t * phi_value * Expected_WRW)
 }
-expectation2 <- quadinf(integrand_mu_2, 0, Inf, mu = mu, cov_matrix = cov_matrix)$Q
+expectation2 <- quadinf(integrand_mu_2, 0, Inf, mu_t = mu_t, cov_matrix = cov_matrix)$Q
 
 Expected_risk <- Tr_sigma + (p^2-4)*expectation2 - 2*(p-2)*Tr_sigma*expectation1
-  
+
 cat(Expected_risk, "is the expected risk")
 ```
