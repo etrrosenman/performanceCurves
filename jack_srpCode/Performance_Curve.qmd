@@ -58,22 +58,27 @@ for (i in seq_len(nrow(Sigma_plot_data))) {
 # ---- Build μ along leading/lagging eigen-directions for each Σ ----
 set.seed(10086)
 
-# Target squared L2 norms for ||μ||^2
-target_l2_norms <- seq(0.01, 10, by = 0.01)
+# Target squared Mahalanobis norms for μ'Σ⁻¹μ
+target_mahal_norms <- seq(0.01, 10, by = 0.01)
 
-Mu_scaled_results <- vector("list", length = nrow(Sigma_plot_data) * length(target_l2_norms) * 2L)
+Mu_scaled_results <- vector("list", length = nrow(Sigma_plot_data) * length(target_mahal_norms) * 2L)
 k <- 1L
 
 # ---- Helper: Expected risk under your SURE formula ----
+# Matches joint_mgf(t, mu_t) and integrand_mu_2(t, mu_t, cov_matrix) from Bock_Setup
 bock_expected_risk <- function(mu, cov_matrix) {
   ev <- eigen(cov_matrix, symmetric = TRUE, only.values = TRUE)$values
   Tr_sigma   <- sum(ev)
   lambda_max <- max(ev)
   p <- Tr_sigma / lambda_max
-  
-  E1 <- pracma::quadinf(joint_mgf,      0, Inf, mu = mu, cov_matrix = cov_matrix)$Q   # E[1/(Y'Y)]
-  E2 <- pracma::quadinf(integrand_mu_2, 0, Inf, mu = mu, cov_matrix = cov_matrix)$Q   # E[(Y Σ^-1 Y)/(Y'Y)^2]
-  
+
+  # Transform mu to mu_t = Σ^{-1/2} μ
+  sigma_inv_half <- solve(expm::sqrtm(cov_matrix))
+  mu_t <- as.vector(sigma_inv_half %*% mu)
+
+  E1 <- pracma::quadinf(joint_mgf,      0, Inf, mu_t = mu_t)$Q
+  E2 <- pracma::quadinf(integrand_mu_2, 0, Inf, mu_t = mu_t, cov_matrix = cov_matrix)$Q
+
   Tr_sigma + (p^2 - 4) * E2 - 2 * (p - 2) * Tr_sigma * E1
 }
 
@@ -89,20 +94,27 @@ for (i in seq_len(nrow(Sigma_plot_data))) {
   lead_vec <- lead_vec / sqrt(sum(lead_vec^2))
   lag_vec  <- lag_vec  / sqrt(sum(lag_vec^2))
 
-  for (l2 in target_l2_norms) {
-    sc <- sqrt(l2)
+  # Eigenvalues for leading/lagging directions
+  # For eigenvector v with eigenvalue λ: v'Σ⁻¹v = 1/λ
+  # So μ = c·v → μ'Σ⁻¹μ = c²/λ → c = sqrt(target · λ)
+  lambda_lead <- max(eig$values)
+  lambda_lag  <- min(eig$values)
 
-    mu_lead <- as.vector(lead_vec * sc)
-    mu_lag  <- as.vector(lag_vec  * sc)
+  for (m2 in target_mahal_norms) {
+    sc_lead <- sqrt(m2 * lambda_lead)
+    sc_lag  <- sqrt(m2 * lambda_lag)
 
-    # Expected risk via Bock SURE if available; else NA
+    mu_lead <- as.vector(lead_vec * sc_lead)
+    mu_lag  <- as.vector(lag_vec  * sc_lag)
+
+    # Expected risk via Bock SURE
     ER_lead <- bock_expected_risk(mu = mu_lead, cov_matrix = Sigma)
     ER_lag  <- bock_expected_risk(mu = mu_lag, cov_matrix = Sigma)
 
     Mu_scaled_results[[k]] <- tibble::tibble(
       Sigma_ID      = Sigma_plot_data$Sigma_ID[i],
       Dimension     = d,
-      Squared_L2    = l2,
+      Mahalanobis   = m2,
       Direction     = "Leading",
       Mu            = list(mu_lead),
       Covariance    = list(Sigma),
@@ -114,7 +126,7 @@ for (i in seq_len(nrow(Sigma_plot_data))) {
     Mu_scaled_results[[k]] <- tibble::tibble(
       Sigma_ID      = Sigma_plot_data$Sigma_ID[i],
       Dimension     = d,
-      Squared_L2    = l2,
+      Mahalanobis   = m2,
       Direction     = "Lagging",
       Mu            = list(mu_lag),
       Covariance    = list(Sigma),
@@ -132,12 +144,10 @@ Mu_scaled_tibble
 ```
 
 ```{r}
-# ---- Performance curves: Scaled Expected Risk vs ||Σ^{-1} μ||^2 ----
-# Compute ||Σ^{-1} μ||^2 and scaled risk
+# ---- Performance curves: Scaled Expected Risk vs μ'Σ⁻¹μ ----
 Mu_scaled_tibble <- Mu_scaled_tibble |>
   mutate(
-    Scaled_Risk = Expected_Risk / Dimension,
-    Mahalanobis = map2_dbl(Mu, Covariance, ~ as.numeric(t(.x) %*% solve(.y, .x)))
+    Scaled_Risk = Expected_Risk / Dimension
   )
 
 Mu_scaled_tibble
@@ -164,39 +174,28 @@ max_range <- max(abs(Mu_centered$y_centered))
 my_plot_scaled <- Mu_centered |>
   ggplot(
     aes(
-      x     = Squared_L2,
+      x     = Mahalanobis,
       y     = y_centered,
       color = Direction
     )
   ) +
   geom_line(aes(group = Direction), linewidth = 1.1) +
-  
+
   # horizontal zero line = baseline
   geom_hline(yintercept = 0, linetype = "dashed", color = "black", linewidth = 0.9) +
-  
+
   facet_wrap(~ Dimension, scales = "free_y") +
-  
+
   labs(
-    title = "Bock SURE Performance: Scaled Risk (Centered) vs ||μ||²",
-    x     = expression("||" * mu * "||"^2),
+    title = expression("Bock SURE Performance: Scaled Risk (Centered) vs " * mu^T * Sigma^{-1} * mu),
+    x     = expression(mu^T * Sigma^{-1} * mu),
     y     = "Centered Expected Risk / Dimension",
     color = "Direction"
   ) +
-  
-  # NOW you can use a single ylim, because all facets have baseline == 0
-  ylim(-max_range, max_range) +
-  
+
   theme_minimal(base_size = 13)
 
 
 print(my_plot_scaled)
 
 ```
-
-build curve on sigma inverse mu on the x axis
-
-y aaxis on scaled risk
-
-and one horizontal line for the trace
-
-another two lines for leading and algging eigen value direction
