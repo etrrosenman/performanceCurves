@@ -19,8 +19,8 @@ library(pracma)       # for numerical integration and linear algebra
 ```{r}
 # Set base simulation parameters
 d <- 3
-mu <- c(0,0,0,0,0,0)     # Mean vector
-sigma_vec <- c(1,2,3,1,2,3)  # Heteroscedastic variances
+mu <- c(0,0,0)     # Mean vector
+sigma_vec <- c(1,2,3)  # Heteroscedastic variances
 Sigma <- diag(sigma_vec)       # Diagonal covariance matrix
 trace <- sum(sigma_vec)       # Find the trace of sigma_vec
 
@@ -179,7 +179,7 @@ MSE |>
 set.seed(123)
 
 # Settings: n distinct dimensions
-dimensions <- 3:10
+dimensions <- 2:6
 
 # Generate one sigma_vec per dimension (diagonal entries)
 target_sigmas <- lapply(dimensions, function(d) runif(d, min = 0.1, max = 3))
@@ -220,7 +220,7 @@ for (i in seq_len(nrow(Sigma_plot_data))) {
 
 ```{r}
 # Target values for || Sigma^{-1/2} mu ||^2  (i.e., mu' Sigma^{-1} mu)
-target_maha_sq <- seq(0.01, 10, by = 0.05)
+target_maha_sq <- seq(0.01, 10, by = 0.01)
 
 # Store results
 Mu_scaled_results <- list()
@@ -302,35 +302,23 @@ Mu_scaled_tibble <- Mu_scaled_tibble |>
 Mu_scaled_tibble
 ```
 
-```{r, fig.width=14, fig.height=10}
-# Baseline risk (MLE, no shrinkage) = trace(Sigma), scaled by dimension
-baseline_df <- Mu_scaled_tibble |>
-  distinct(Dimension, Trace) |>
-  mutate(Baseline = Trace / Dimension)
-
-Mu_scaled_tibble |>
+```{r}
+Mu_scaled_tibble |> 
   mutate(
-    Scaled_Risk = Expected_Risk / Dimension
-  ) |>
-  ggplot(aes(x = Squared_L2, y = Scaled_Risk)) +
-    geom_hline(data = baseline_df, aes(yintercept = Baseline),
-               linetype = "dashed", color = "gray50", linewidth = 0.7) +
-    geom_line(aes(color = Direction), linewidth = 1.2) +
-    facet_wrap(~ Dimension, scales = "free_y", ncol = 3) +
-    scale_color_manual(values = c("Leading" = "#2196F3", "Lagging" = "#E91E63")) +
+    Scaled_Risk = Expected_Risk / Dimension,
+    Mu_Norm_Sq = map_dbl(Mu, ~ sum(.x^2))
+  ) |> 
+  ggplot(aes(x = Mu_Norm_Sq, y = Scaled_Risk)) +
+    geom_line(aes(color = Direction), linewidth = 1) +
+    geom_point(aes(color = Direction), size = 0.5, alpha = 0.7) +  # Adds visible x values
+    facet_wrap(~ Dimension, scales = "free_y") +
     labs(
-      title = expression("Scaled Expected Risk vs. ||" * Sigma^{-1/2} * mu * "||"^2),
-      x = expression("||" * Sigma^{-1/2} * mu * "||"^2),
+      title = "Scaled Expected Risk vs. ||μ||²",
+      x = expression("||" * mu * "||"^2),
       y = "Expected Risk / Dimension",
       color = "Direction"
     ) +
-    theme_minimal(base_size = 14) +
-    theme(
-      strip.text = element_text(size = 14, face = "bold"),
-      legend.position = "bottom",
-      legend.text = element_text(size = 12),
-      plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
-      panel.spacing = unit(1.2, "lines")
-    )
+    theme_minimal(base_size = 13)
 
 ```
+
